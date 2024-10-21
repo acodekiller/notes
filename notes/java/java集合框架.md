@@ -594,6 +594,8 @@ Java8在同样的前提下并不会引起死循环，原因是扩容转移后前
 
 为了位运算的方便，**位与运算比算数计算的效率高了很多**，之所以选择**2的幂**，是为了服务将Key映射到index的算法。index的计算公式：index = HashCode（Key） & （Length- 1），15的的二进制是1111，Length-1的值是所有二进制位全为1，这种情况下，index的结果等同于HashCode(key)后几位的值。
 
+[详细解释:HashMap的容量为什么一定是2^n](java集合框架详解/HashMap的容量为什么一定是2^n)
+
 ### 8）一般在多线程的场景，如何使用map集合
 
 - 使用Collections.synchronizedMap(Map)创建线程安全的map集合；
@@ -1262,4 +1264,6 @@ final long sumCount() {
     return sum;
 }
 ```
+
+
 
