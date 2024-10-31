@@ -580,3 +580,209 @@ POST /heima/_update/1
 
 # 四、RestAPI
 
+1）引入es的RestHighLevelClient依赖
+
+```xml
+<dependency>
+    <groupId>org.elasticsearch.client</groupId>
+    <artifactId>elasticsearch-rest-high-level-client</artifactId>
+</dependency>
+```
+
+2）初始化RestHighLevelClient：
+
+```java
+RestHighLevelClient client = new RestHighLevelClient(RestClient.builder(
+        HttpHost.create("http://192.168.150.101:9200")
+));
+```
+
+## 1、操作索引
+
+### 1）创建索引库
+
+创建索引库的API如下：
+
+![img](imgs/5b044aa9422ff2730f1a0986303c2824.png)
+
+代码分为三步：
+
+- 1）创建Request对象。因为是创建索引库的操作，因此Request是CreateIndexRequest。
+- 2）添加请求参数，其实就是DSL的JSON参数部分。因为json字符串很长，这里是定义了静态字符串常量MAPPING_TEMPLATE，让代码看起来更加优雅。
+
+- 3）发送请求，client.indices()方法的返回值是IndicesClient类型，封装了所有与索引库操作有关的方法。
+
+### 2）删除索引库
+
+API如下：
+
+```java
+// 1.创建Request对象
+DeleteIndexRequest request = new DeleteIndexRequest("hotel");
+// 2.发送请求
+client.indices().delete(request, RequestOptions.DEFAULT);
+```
+
+所以代码的差异，注意体现在Request对象上。依然是三步走：
+
+- 1）创建Request对象。这次是DeleteIndexRequest对象
+
+- 2）准备参数。这里是无参
+
+- 3）发送请求。改用delete方法
+
+### 3）判断索引库是否存在
+
+API如下：
+
+```java
+// 1.创建Request对象
+GetIndexRequest request = new GetIndexRequest("hotel");
+// 2.发送请求
+boolean exists = client.indices().exists(request, RequestOptions.DEFAULT);
+// 3.输出
+System.err.println(exists ? "索引库已经存在！" : "索引库不存在！");
+```
+
+本质就是查询，依然是三步走：
+
+- 1）创建Request对象。这次是GetIndexRequest对象
+
+- 2）准备参数。这里是无参
+
+- 3）发送请求。改用exists方法
+
+> **总结**
+>
+> JavaRestClient操作elasticsearch的流程基本类似。核心是client.indices()方法来获取索引库的操作对象。
+>
+> 索引库操作的基本步骤：
+>
+> - 初始化RestHighLevelClient
+>
+> - 创建XxxIndexRequest。XXX是Create、Get、Delete
+>
+> - 准备DSL（ Create时需要，其它是无参）
+>
+> - 发送请求。调用RestHighLevelClient#indices().xxx()方法，xxx是create、exists、delete
+>
+
+## 2、操作文档
+
+### 1）新增文档
+
+API如下：
+
+![img](imgs/168d5de3c774311ecbe2c0938397787a.png)
+
+可以看到与创建索引库类似，同样是三步走：
+
+- 1）创建Request对象
+
+- 2）准备请求参数，也就是DSL中的JSON文档
+
+- 3）发送请求
+
+变化的地方在于，这里直接使用client.xxx()的API，不再需要client.indices()了。
+
+### 2）查询文档
+
+![img](imgs/258ef13a0ba7d7c1806f9d87993378ac.png)
+
+三步走：
+
+- 1）准备Request对象。这次是查询，所以是GetRequest
+
+- 2）发送请求，得到结果。因为是查询，这里调用client.get()方法
+
+- 3）解析结果，就是对JSON做反序列化
+
+### 3）删除文档
+
+```java
+// 1.准备Request
+DeleteRequest request = new DeleteRequest("hotel", "1");
+// 2.发送请求
+client.delete(request, RequestOptions.DEFAULT);
+```
+
+三步走：
+
+- 1）准备Request对象，因为是删除，这次是DeleteRequest对象。要指定索引库名和id
+
+- 2）准备参数，无参
+
+- 3）发送请求。因为是删除，所以是client.delete()方法
+
+### 4）修改文档
+
+修改我们讲过两种方式：
+
+- 全量修改：本质是先根据id删除，再新增
+
+- 增量修改：修改文档中的指定字段值
+
+
+在RestClient的API中，全量修改与新增的API完全一致，判断依据是ID：
+
+- 如果新增时，ID已经存在，则修改
+
+- 如果新增时，ID不存在，则新增
+
+
+这里不再赘述，我们主要关注增量修改。
+
+代码示例如图：
+
+![img](imgs/3b43e959da3a55e36d8b77d9e7c54ab5.png)
+
+三步走：
+
+- 1）准备Request对象。这次是修改，所以是UpdateRequest
+
+- 2）准备参数。也就是JSON文档，里面包含要修改的字段
+
+- 3）更新文档。这里调用client.update()方法
+
+### 5）批量导入文档
+
+批量处理BulkRequest，其本质就是将多个普通的CRUD请求组合在一起发送。
+
+其中提供了一个add方法，用来添加其他请求：
+
+![img](imgs/ae50b847979e22b5ab3ebb3296d768ab.png)
+
+可以看到，能添加的请求包括：
+
+- IndexRequest，也就是新增
+
+- UpdateRequest，也就是修改
+
+- DeleteRequest，也就是删除
+
+因此Bulk中添加了多个IndexRequest，就是批量新增功能了。示例：
+
+![img](imgs/9c224534070a73f700ec07321b92ee49.png)
+
+其实还是三步走：
+
+- 1）创建Request对象。这里是BulkRequest
+
+- 2）准备参数。批处理的参数，就是其它Request对象，这里就是多个IndexRequest
+
+- 3）发起请求。这里是批处理，调用的方法为client.bulk()方法
+
+> **小结**
+>
+> 文档操作的基本步骤：
+>
+> - 初始化RestHighLevelClient
+>
+> - 创建XxxRequest。XXX是Index、Get、Update、Delete、Bulk
+>
+> - 准备参数（Index、Update、Bulk时需要）
+>
+> - 发送请求。调用RestHighLevelClient#.xxx()方法，xxx是index、get、update、delete、bulk
+>
+> - 解析结果（Get时需要）
+>
