@@ -50,7 +50,7 @@
 - [Redis](notes/database/Redis)
 - [RabbitMQ](notes/database/RabbitMQ)
 - [Nginx](notes/database/Nginx)
-- [ElasticSearch]
+- [ElasticSearch](notes/database/ElasticSearch)
 
 ## 💡常用框架
 
