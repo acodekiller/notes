@@ -1069,6 +1069,10 @@ public int size() {
 
 
 
+**7. ConcurrentHashMap 1.7 用头插法，会不会也有环的问题？**
+
+不会。虽然 JDK 1.7 的 `ConcurrentHashMap` 在 `Segment` 内部使用头插法，但每个 `Segment` 继承自 `ReentrantLock`，扩容操作（`rehash`）是在获取锁之后、释放锁之前执行的。这意味着同一时刻只有一个线程能对某个 `Segment` 进行扩容，不会出现多个线程交错修改同一个链表的 `next` 指针的情况。而 `HashMap` 成环的根本原因是多线程并发扩容导致的指针交错，`ConcurrentHashMap` 通过分段锁串行化了扩容过程，所以即使使用头插法也不会成环。
+
 #### b) 1.8
 
 ##### 1. 数据结构
