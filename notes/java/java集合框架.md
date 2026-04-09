@@ -1330,5 +1330,80 @@ final long sumCount() {
 }
 ```
 
+### 4）ConcurrentHashMap 为什么key和value都不能为null
 
+`ConcurrentHashMap` 不允许 `null` 键和 `null` 值，主要是为了避免并发场景下的歧义性。
 
+在并发环境下，`map.get(key)` 如果返回 `null`，无法判断是 **key 不存在** 还是 **key 存在但值为 null**。虽然在单线程中可以用 `containsKey` 区分，但在多线程中，在你调用 `get` 和 `containsKey` 之间，其他线程可能已经修改了 `map`，导致判断结果不准确。
+
+为了让 `get` 方法返回 `null` 具有**唯一且明确**的含义（即 key 不存在），Doug Lea 在设计时禁止了 `null` 的插入。这也是线程安全容器（如 `Hashtable`、`ConcurrentHashMap`）与非线程安全容器（如 `HashMap`）的一个重要区别。
+
+#### 如果一定要存储 null 怎么办？
+
+1. **使用特殊占位符对象**：
+   使用一个自定义的常量对象代替 `null`，例如 `static final Object NULL = new Object()`。
+2. **使用 `Optional` 包装**（Java 8+）：
+   将值包装在 `Optional` 中，不存在则为 `Optional.empty()`，存在且为 null 则为 `Optional.of(null)`（虽然这看起来有点绕，但能明确语义）。
+
+```java
+public class DistinguishableCache {
+    private final ConcurrentHashMap<String, Optional<String>> cache = new ConcurrentHashMap<>();
+    
+    // ✅ 返回 Optional，让调用方自己处理
+    public Optional<String> get(String key) {
+        return cache.get(key);  // 可能返回 null（key不存在）或 Optional（key存在）
+    }
+    
+    // ✅ 能区分三种情况的获取方法
+    public String getWithStatus(String key) {
+        Optional<String> opt = cache.get(key);
+        if (opt == null) {
+            return "【状态1：key 不存在】";
+        }
+        if (!opt.isPresent()) {
+            return "【状态2：key 存在，但值为 null】";
+        }
+        return "【状态3：key 存在，值为：" + opt.get() + "】";
+    }
+    
+    public static void main(String[] args) {
+        DistinguishableCache cache = new DistinguishableCache();
+        
+        cache.cache.put("key1", Optional.of("hello"));   // 存在且有值
+        cache.cache.put("key2", Optional.empty());        // 存在但值为 null
+        // key3 不存在
+        
+        // 方式1：通过返回的 Optional 判断
+        Optional<String> opt1 = cache.get("key1");
+        Optional<String> opt2 = cache.get("key2");
+        Optional<String> opt3 = cache.get("key3");
+        
+        System.out.println("key1: " + opt1);           // Optional[hello]
+        System.out.println("key1 是否有值: " + opt1.isPresent());  // true
+        
+        System.out.println("key2: " + opt2);           // Optional.empty
+        System.out.println("key2 是否有值: " + opt2.isPresent());  // false
+        System.out.println("key2 是否存在: true");  // 通过 opt2 != null 知道
+        
+        System.out.println("key3: " + opt3);           // null
+        System.out.println("key3 是否存在: " + (opt3 != null));  // false
+        
+        // 方式2：使用带状态的方法
+        System.out.println(cache.getWithStatus("key1"));  // 【状态3：key 存在，值为：hello】
+        System.out.println(cache.getWithStatus("key2"));  // 【状态2：key 存在，但值为 null】
+        System.out.println(cache.getWithStatus("key3"));  // 【状态1：key 不存在】
+    }
+}
+```
+
+### 5）ConcurrentHashMap 1.7和1.8的区别
+
+1. **锁的粒度：**
+
+- JDK 1.7 采用分段锁设计。底层把整个数组分成 16 个 Segment，每个 Segment 里面是一个完整的 HashMap 加一把 ReentrantLock。不同线程访问不同 Segment 完全不挡，同一 Segment 才有锁竞争，并发度最高 16。
+- JDK 1.8 移除了 Segment，锁粒度细化到数组每个槽位。数据结构跟 HashMap 同步，变成数组 + 链表 + 红黑树。插入时先用 CAS 无锁尝试插到数组位置，真冲突了才用 synchronized，而且只锁链表或树的头节点，其他线程照样可以操作别的 bucket，并发度大大增加。
+
+2. **size的计算方式：**
+
+- 1.7 计算 size 要把 16 个 Segment 都锁住再加起来，慢
+- 1.8 用类似 LongAdder 的 CounterCells，基本无锁统计
