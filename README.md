@@ -52,7 +52,7 @@
 - [Nginx](notes/database/Nginx)
 - [ElasticSearch](notes/database/ElasticSearch)
 
-## 💡常用框架
+## 💡常用框架/技术
 
 - [Servlet](notes/framework/Servlet)
 - [Spring](notes/framework/Spring)
@@ -63,6 +63,7 @@
 - [Dubbo](notes/framework/Dubbo)
 - [Spring Cloud](notes/framework/SpringCloud)
 - [Quartz](notes/framework/Quartz)
+- [FreeMarker](notes/framework/FreeMarker)
 
 ## 🔧开发工具
 
