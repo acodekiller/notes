@@ -1405,5 +1405,5 @@ public class DistinguishableCache {
 
 2. **size的计算方式：**
 
-- 1.7 计算 size 要把 16 个 Segment 都锁住再加起来，慢
+- 1.7 ：计算元素个数前，先不加锁计算两次，如果前后两次结果一样，认为个数正确返回；如果不一样，进行重试，重试次数超过3，将所有segment锁住，重新计算个数返回。
 - 1.8 用类似 LongAdder 的 CounterCells，基本无锁统计
