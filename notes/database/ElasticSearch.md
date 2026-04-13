@@ -2244,6 +2244,10 @@ PUT /test
 
 为了避免搜索到同音字，搜索时不要使用拼音分词器
 
+> **注意：`search_analyzer` 和 `analyzer` 是不同的概念**
+>
+> `analyzer` 用于**索引时**分词（写入倒排索引），`search_analyzer` 用于**查询时**分词。如果不单独指定 `search_analyzer`，默认沿用 `analyzer`。分开设置的典型场景是：索引时细粒度分词保证召回率，查询时粗粒度分词保证精准度。
+
 ### 3）自动补全查询
 
 elasticsearch提供了Completion Suggester查询来实现自动补全功能。这个查询会匹配以用户输入内容开头的词条并返回。为了提高补全查询的效率，对于文档中字段的类型有一些约束：
