@@ -51,6 +51,23 @@ elasticsearch底层是基于**lucene**来实现的。
 
 - 2010年Shay Banon 重写了Compass，取名为Elasticsearch。
 
+### 5）elasticsearch VS solr
+
+| 维度              | Elasticsearch        | Solr                           |
+| :---------------- | :------------------- | :----------------------------- |
+| **设计理念**      | 分布式、实时、云原生 | 功能丰富、配置驱动、传统企业级 |
+| **架构模式**      | 天生分布式，内置协调 | SolrCloud + ZooKeeper          |
+| **数据格式**      | 仅 JSON              | JSON、XML、CSV 等              |
+| **查询接口**      | RESTful JSON DSL     | HTTP + XML/JSON 参数           |
+| **实时性**        | 近实时（~1秒延迟）   | 写入时可能阻塞查询             |
+| **日志/时序数据** | ✅ 天生适合（ELK 栈） | ❌ 不够优化                     |
+| **文本分析**      | 强                   | 更强（40+ 语言、更细粒度控制） |
+
+- Elasticsearch 和 Solr 都是基于 Lucene 的搜索引擎，但设计哲学不同。
+- **Elasticsearch 是分布式优先**：天生为云原生、海量数据、实时场景设计。它内置节点发现和协调，不需要 ZooKeeper，API 是 RESTful JSON，对开发者友好。特别适合日志分析（ELK 栈）、实时搜索、应用内搜索。
+- **Solr 是功能优先**：作为传统企业级搜索引擎，它功能更丰富——分面搜索更强、文本分析更细粒度、支持多种数据格式。但代价是依赖 ZooKeeper、配置复杂、实时写入性能较差。
+- **选型建议**：新项目、日志场景、实时性要求高 → 选 ES；已有 Java 生态、需要精细搜索功能、结构化数据为主 → 选 Solr。两者在电商搜索领域有重叠，但整体趋势是 ES 正在成为主流选择。
+
 ## 2、倒排索引
 
 倒排索引的概念是基于MySQL这样的正向索引而言的。
@@ -189,6 +206,20 @@ elasticsearch底层是基于**lucene**来实现的。
 **2. 查询流程（搜索阶段）**
 
 `查询词 → 分词 → 在 Term Index 中定位 → 在 Term Dictionary 中查找 → 读取 Posting List → 合并结果 → 返回文档`
+
+#### 1.3 原理
+
+倒排索引是 ES 全文搜索的核心，本质是'词到文档'的映射。它采用三层结构：
+
+**Term Index** 在内存中，使用 FST 结构，通过共享前缀压缩，快速定位词项在磁盘上的位置，类似字典的字母索引。
+
+**Term Dictionary** 在磁盘上，是所有词项的有序列表，每个词项指向对应的 Posting List，类似字典的正文。
+
+**Posting List** 在磁盘上，存储文档ID列表、词频、位置信息，用于相关性计算和短语查询，并采用 FOR、Roaring Bitmap 等压缩技术节省空间。
+
+查询时，先在内存的 Term Index 中定位，然后读取磁盘上的 Term Dictionary 获取指针，再读取 Posting List 拿到文档ID列表，最后合并结果并计算相关性得分。
+
+这种设计用极小的内存成本（Term Index）换取了极高的查询性能，是 ES 能在海量数据下实现毫秒级全文检索的根本原因。
 
 ## 3、常见概念
 
@@ -1058,6 +1089,11 @@ Elasticsearch提供了基于JSON的DSL（[Domain Specific Language](https://www.
   
     - term
   
+- 通配符查询：查询用于执行通配符模式匹配，`\*` 匹配任意字符序列（包括空），`?` 匹配单个字符。
+
+
+  - wildcard
+
 
 
 - 地理（geo）查询：根据经纬度查询。例如：
@@ -1263,7 +1299,41 @@ GET /indexName/_search
 
 - range查询：根据数值范围查询，可以是数值、日期的范围
 
-## 4、地理坐标查询
+## 4、通配符查询
+
+| 通配符   | 含义                    | 示例     | 匹配结果                     |
+| :------- | :---------------------- | :------- | :--------------------------- |
+| `*`      | 匹配 0 个或多个任意字符 | `"te*t"` | `"test"`, `"text"`, `"tent"` |
+| `?`      | 匹配 1 个任意字符       | `"te?t"` | `"test"`, `"text"`, `"tent"` |
+| 组合使用 | 混合使用                | `"t?*t"` | 至少 2 个字符，首尾是 `t`    |
+
+基本语法：
+
+```json
+GET /indexName/_search
+{
+  "query": {
+    "wildcard": {
+      "name": "XXX*"
+    }
+  }
+}
+```
+
+`wildcard` 查询**大小写敏感**，与字段原始存储值一致。
+
+> 通配符查询无法利用倒排索引，需要遍历 Term Dictionary 中的所有词项进行匹配。特别是前缀通配符（如 `*abc`），需要扫描整个字典。
+>
+> 如果必须使用通配符查询，有几个优化建议：
+>
+> 1. 尽量使用后缀通配符（`abc*`），可以利用前缀索引
+> 2. 使用 ES 8.x 引入的 `wildcard` 字段类型，它针对通配符查询做了专门优化
+> 3. 考虑用 n-gram 分词器 + `match` 查询替代
+> 4. 设置查询超时，避免慢查询拖垮集群
+>
+> 实际生产中，我会优先推荐用户使用 `match` 全文搜索或 `prefix` 前缀查询，只有在确实需要灵活通配符匹配时才用 `wildcard`，并且会限制其使用范围和数据量。
+
+## 5、地理坐标查询
 
 所谓的地理坐标查询，其实就是根据经纬度查询，官方文档：https://www.elastic.co/guide/en/elasticsearch/reference/current/geo-queries.html
 
@@ -1355,7 +1425,7 @@ GET /indexName/_search
 
 可以发现，搜索到的酒店数量减少到了5家。
 
-## 5、复合查询
+## 6、复合查询
 
 复合（compound）查询：复合查询可以将其它简单查询组合起来，实现更复杂的搜索逻辑。常见的有两种：
 
@@ -2487,7 +2557,7 @@ PUT /test
       "filter": { // 自定义tokenizer filter
         "py": { // 过滤器名称
           "type": "pinyin", // 过滤器类型，这里是pinyin
-		  	 "keep_full_pinyin": false,
+		  "keep_full_pinyin": false,
           "keep_joined_full_pinyin": true,
           "keep_original": true,
           "limit_first_letter_length": 16,
