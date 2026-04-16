@@ -68,6 +68,18 @@ elasticsearch底层是基于**lucene**来实现的。
 - **Solr 是功能优先**：作为传统企业级搜索引擎，它功能更丰富——分面搜索更强、文本分析更细粒度、支持多种数据格式。但代价是依赖 ZooKeeper、配置复杂、实时写入性能较差。
 - **选型建议**：新项目、日志场景、实时性要求高 → 选 ES；已有 Java 生态、需要精细搜索功能、结构化数据为主 → 选 Solr。两者在电商搜索领域有重叠，但整体趋势是 ES 正在成为主流选择。
 
+> ### ES是如何实现NRT的？
+>
+> ES 的 NRT 核心由 **refresh** 机制实现，而非 flush。
+>
+> 写入流程是：文档先写入内存缓冲区和 Translog。默认每秒执行一次 refresh，将缓冲区文档生成新的 Segment，此时数据变得**可搜索**——这就是 NRT 的由来。但此时数据可能还在 OS 缓存中，未真正落盘。
+>
+> ![image-20260416095834965](imgs/image-20260416095834965.png)
+>
+> 真正的持久化由 **flush** 完成：默认 30 分钟或 Translog 达到 512MB 时，将 Segment 强制刷盘并清空 Translog。
+>
+> 所以总结：**refresh 管搜索可见性，flush 管数据持久性**。NRT 的"近"就在这 1 秒的 refresh 间隔。
+
 ## 2、倒排索引
 
 倒排索引的概念是基于MySQL这样的正向索引而言的。
@@ -203,6 +215,8 @@ elasticsearch底层是基于**lucene**来实现的。
 3. **构建倒排**：为每个词项记录文档ID、位置、频率等信息
 4. **写入磁盘**：生成 Segment，每个 Segment 有自己的倒排索引
 
+
+
 **2. 查询流程（搜索阶段）**
 
 `查询词 → 分词 → 在 Term Index 中定位 → 在 Term Dictionary 中查找 → 读取 Posting List → 合并结果 → 返回文档`
@@ -331,10 +345,11 @@ mapping是对索引库中文档的约束，常见的mapping属性包括：
 
   - 对象：object
 
+  - 嵌套：nested
+  
+  - 输入建议：completion
 - index：是否创建索引，默认为true
-
 - analyzer：使用哪种分词器
-
 - properties：该字段的子字段
 
 ```json
@@ -699,7 +714,31 @@ ES 的映射分为静态映射和动态映射。
 
 实际生产中，我会根据场景选择：核心业务用静态映射，日志类数据用动态映射 + 动态模板来控制规则。如果需要修改已有字段类型，只能通过 `_reindex` 重建索引。
 
+## 4、索引设计调优
 
+#### 1）分片和副本数量：
+
+合理设置主分片和副本分片的数量，确保集群负载均衡，提高数据的可用性和查询性能。
+
+#### 2）映射类型：
+
+定义合理的映射（Mapping），避免使用动态映射模式，确保字段类型定义明确，减少索引开销。
+
+#### 3）分词和分析器：
+
+选择合适的分词器（Tokenizer）和分析器（Analyzer），避免过度分词，提高搜索精度和效率。
+
+#### 4）字段存储和压缩：
+
+根据查询需求，决定哪些字段需要存储（Stored Fields），并使用合适的压缩算法（如 LZ4）来减少磁盘空间的占用。
+
+#### 5）索引周期和滚动索引：
+
+对于时间序列数据，使用滚动索引策略，定期创建新索引并将旧数据归档，保持索引体积在可控范围内。
+
+#### 6）模板和别名：
+
+使用索引模板（Index Template）和别名（Alias）管理索引的生命周期和访问控制，提高管理效率。
 
 ---
 
@@ -1092,8 +1131,7 @@ Elasticsearch提供了基于JSON的DSL（[Domain Specific Language](https://www.
 - 通配符查询：查询用于执行通配符模式匹配，`\*` 匹配任意字符序列（包括空），`?` 匹配单个字符。
 
 
-  - wildcard
-
+    - wildcard
 
 
 - 地理（geo）查询：根据经纬度查询。例如：
@@ -1112,6 +1150,11 @@ Elasticsearch提供了基于JSON的DSL（[Domain Specific Language](https://www.
   
     - function_score
   
+- 嵌套查询：存储和查询具有多重层次结构的复杂 JSON 对象
+
+
+  - nested
+
 
 
 查询的语法基本一致：
@@ -1683,9 +1726,219 @@ bool查询有几种逻辑关系？
 
 > 用 `wildcard` 查询（`keyword` 字段）或 `match_phrase`（`text` 字段）。但 ES 设计上不擅长通配符匹配，性能较差。
 
+## 7、嵌套查询
 
+在 Elasticsearch 中，嵌套类型（Nested Type）字段是一种特殊的数据类型，用来存储复杂的 JSON 对象结构。这种类型与对象类型（Object Type）相似，但其索引方式是不同的。Nested 类型字段在索引时会将每个子文档单独索引，从而保证查询时关联特性能够正确工作。
+
+使用 Nested 类型字段时，可以在查询中进行高效的嵌套查询（nested query），确保嵌套文档的相关性得到正确处理。适用场景包括需要存储和查询具有多重层次结构的复杂 JSON 对象，例如商品属性、用户评论等。
+
+### 1）基本用法
+
+1. 索引创建
+
+```json
+//在创建索引时可以定义嵌套类型字段。例如，有以下商品信息需要存储，每个商品有多个不同的属性：
+PUT /my_index
+{
+  "mappings": {
+    "properties": {
+      "product": {
+        "type": "nested", 
+        "properties": {
+          "name": { "type": "keyword" },
+          "attributes": { 
+            "type": "nested",
+            "properties": {
+              "color": { "type": "keyword" },
+              "size": { "type": "keyword" }
+            }
+          }
+        }
+      }
+    }
+  }
+}
+```
+
+2. 嵌套查询
+
+```json
+GET /my_index/_search
+{
+  "query": {
+    "nested": {
+      "path": "product.attributes",
+      "query": {
+        "bool": {
+          "must": [
+            { "match": { "product.attributes.color": "red" } },
+            { "match": { "product.attributes.size": "large" } }
+          ]
+        }
+      }
+    }
+  }
+}
+```
+
+### 2）使用场景
+
+- 复杂对象的存储和查询：比如电商系统中的商品，具有多层次的属性结构。
+- 日志系统：一个日志记录可能包含多个来源信息或事件，每个信息和事件同样具有多个字段。
+- 用户评论和评级系统：每个用户的评论和评级分别是一个独立的嵌套结构。
+
+### 4）性能考虑
+
+由于每个嵌套文档被单独索引，所以在写入时的性能相对而言可能会受到一些影响，但查询的准确性大幅提升。因此，使用嵌套类型时需要权衡写入性能和查询准确性。
+
+## 8、建议查询
+
+Completion Suggester 是 Elasticsearch 专门为**自动补全（Auto-Complete）**功能设计的建议器，它在内存中构建一个名为 **FST（Finite State Transducer）** 的紧凑数据结构，查询速度极快（毫秒级），非常适合实时搜索场景
+
+### 1）核心特点
+
+| 特点           | 说明                                    |
+| :------------- | :-------------------------------------- |
+| **速度快**     | 基于内存 FST 前缀查找，不是倒排索引扫描 |
+| **模糊匹配**   | 支持 `fuzzy` 参数处理拼写错误           |
+| **权重排序**   | 支持 `weight` 字段控制热门结果排前面    |
+| **上下文过滤** | 支持按类别、语言等过滤建议              |
+
+### 2）使用步骤
+
+1. 创建索引，定义 `completion` 字段
+
+```json
+PUT /products
+{
+  "mappings": {
+    "properties": {
+      "suggest": { "type": "completion" }
+    }
+  }
+}
+```
+
+2. 写入数据
+
+```json
+// 简单写法
+POST /products/_doc/1
+{ "suggest": "手机壳" }
+
+// 带权重和多个输入
+POST /products/_doc/2
+{
+  "suggest": {
+    "input": ["小米手机", "小米 14 Pro"],
+    "weight": 10
+  }
+}
+```
+
+3. 查询
+
+```json
+GET /products/_search
+{
+  "suggest": {
+    "my_suggest": {
+      "prefix": "手机",
+      "completion": { "field": "suggest", "size": 5 }
+    }
+  }
+}
+```
+
+### 3）高级功能
+
+1. 模糊匹配（处理拼写错误）
+
+```json
+//效果："小来" 仍然能匹配到 "小米手机壳"。
+GET /products/_search
+{
+  "suggest": {
+    "my_suggest": {
+      "prefix": "小来",
+      "completion": {
+        "field": "suggest",
+        "fuzzy": 
+          { 
+              "fuzziness": 1,        // 允许 1 个字符的编辑距离
+          	  "prefix_length": 1     // 前 1 个字符必须精确匹配
+          }			
+      }
+    }
+  }
+}
+```
+
+2. 上下文过滤（按类别筛选）
+
+```json
+// 创建索引时定义上下文
+PUT /products
+{
+  "mappings": {
+    "properties": {
+      "suggest": {
+        "type": "completion",
+        "contexts": [
+          {
+            "name": "category",
+            "type": "category"
+          }
+        ]
+      }
+    }
+  }
+}
+
+// 写入带上下文的数据
+POST /products/_doc/6
+{
+  "name": "小米 14 Pro",
+  "suggest": {
+    "input": ["小米 14 Pro", "小米手机"],
+    "contexts": {
+      "category": "手机"       // 上下文值
+    }
+  },
+  "price": 3999
+}
+
+// 查询时指定上下文
+GET /products/_search
+{
+  "suggest": {
+    "product_suggest": {
+      "prefix": "小米",
+      "completion": {
+        "field": "suggest",
+        "contexts": {
+          "category": "手机"    // 只建议 category 为 "手机" 的
+        }
+      }
+    }
+  }
+}
+```
+
+### 4）性能优化建议
+
+| 优化点       | 建议                                               |
+| :----------- | :------------------------------------------------- |
+| **字段类型** | 使用 `completion` 类型，不要用 `text` 或 `keyword` |
+| **索引大小** | 建议数据量在几百万条以内（FST 内存占用可控）       |
+| **权重设置** | 热点商品设置更高权重，提升转化                     |
+| **模糊匹配** | `fuzziness` 不要超过 2，`prefix_length` 至少为 1   |
+| **上下文**   | 合理使用上下文减少候选集                           |
+| **缓存**     | Completion Suggester 默认缓存，重复查询很快        |
 
 ---
+
+
 
 # 六、搜索结果处理
 
@@ -3259,7 +3512,7 @@ green  open   another_index                   Kd5Rlx32SLabFR3vtfx7Og   1   0    
 
 - 使用 `wait_for_active_shards` 保证足够副本写入（读采用的是轮询的方式，可能读到副本，而写入时是先写主分片再写副本）
 - 使用乐观锁（`if_seq_no`）避免丢失更新
-- 根据业务需求调整 `refresh_interval`（默认refresh为30s） 和 `translog`（事务日志） 刷盘策略
+- 根据业务需求调整 `refresh_interval`（默认refresh为1s） 和 `translog`（事务日志） 刷盘策略
 
 **读取端**：
 
@@ -3424,29 +3677,179 @@ POST /orders/_doc/1
 >
 > 这种设计的优点是写入性能高、查询无需加锁，缺点是更新会产生冗余数据，需要靠后台 Merge 来清理。这是 ES 在性能与空间之间做的经典权衡。
 
+## 6、实现自动化清理
 
+ES主要通过**索引生命周期管理（ILM）**和**数据流生命周期（DSL）**两大机制来实现自动化清理。前者功能全面，后者更简洁。
 
+核心思路是：**为你的数据定义一个“保质期”，ES就会在其到期后自动执行清理。**
 
+### 1）索引生命周期管理 (ILM)
 
+ILM是ES官方推荐的处理时序数据（如日志、指标、事件）的标准方式。你可以为索引定义一系列阶段，并设置何时进入“删除(Delete)”阶段。
 
+**1. ILM的四个核心阶段**
 
+| 阶段       | 目的                                         | 可执行的操作                                          |
+| :--------- | :------------------------------------------- | :---------------------------------------------------- |
+| **Hot**    | 处理正在写入的“热”数据，追求高性能。         | 设置分片数、副本数、优先级等。                        |
+| **Warm**   | 处理不再更新但仍需查询的“温”数据，优化存储。 | 迁移到低规格节点、减少副本数、合并段(force merge)等。 |
+| **Cold**   | 处理极少查询的“冷”数据，节省成本。           | 迁移到更廉价的存储、冻结索引（节省内存）等。          |
+| **Delete** | 处理达到保留期限的过期数据，**执行删除**。   | **直接删除索引**，释放磁盘空间。                      |
 
+**2. 实战：创建一个30天后自动删除的策略**
 
+假设你需要让索引在创建30天后自动删除，可以通过API定义如下策略：
 
+```json
+PUT _ilm/policy/auto-delete-policy
+{
+  "policy": {
+    "phases": {
+      "hot": {
+        "min_age": "0ms",
+        "actions": {
+          "set_priority": {
+            "priority": 100
+          }
+        }
+      },
+      "delete": {
+        "min_age": "30d",   // 索引创建30天后进入此阶段
+        "actions": {
+          "delete": {}      // 执行删除操作
+        }
+      }
+    }
+  }
+}
+```
 
+*策略中定义了`hot`和`delete`两个阶段，`delete`阶段会在索引创建满30天（`"min_age": "30d"`）后，执行`delete`操作将其删除。*
 
+**3. 如何应用策略**
 
+策略需要绑定到索引上才能生效。有两种方式：
 
+- **创建索引模板（推荐）**：为符合特定名称规则（如`logs-*`）的新索引自动应用策略。
 
+```json
+PUT _index_template/my_logs_template
+{
+  "index_patterns": ["logs-*"],
+  "template": {
+    "settings": {
+      "index.lifecycle.name": "auto-delete-policy" // 引用上面创建的策略
+    }
+  }
+}
+```
 
+- **手动应用到单个索引**：也可以直接为现有索引指定ILM策略。
 
+### 2）数据流生命周期 (DSL) 
 
+对于**数据流(Data Stream)**，ES提供了一种更简化的内置生命周期管理机制。你只需要指定一个**数据保留期限**即可，无需关心复杂的阶段划分。
 
+例如，创建一个数据流并设置数据保留30天：
 
+```json
+PUT /_data_stream/my-data-stream
+{
+  "lifecycle": {
+    "enabled": true,
+    "data_retention": "30d"  // 数据保留30天后自动删除
+  }
+}
+```
 
+*这个例子创建了一个数据流，并通过`data_retention`参数明确指定，数据将在保留30天后被系统自动清理。*
 
+### 3）其它辅助方案
 
+- **Curator**：一个命令行工具，通过外部定时任务来删除索引，是ILM流行之前的方案，现在更推荐使用ILM。
+- **索引回收站**：部分云服务提供的一种安全机制，删除索引时会先放入回收站，可配置自动清空间隔，起到“软删除”的作用。
 
+### 4）总结
 
+ES的自动化清理主要依赖**索引生命周期管理（ILM）**。核心思路是：
 
+1. 通过API创建一个定义数据生命周期的**策略(Policy)**，并在其中明确指定何时进入**删除(Delete)阶段**。
+2. 将该策略关联到**索引模板(Index Template)**。
+3. 之后，符合模板规则的新索引便会自动应用该策略。当索引达到预设的期限（如“30d”），ILM就会自动执行删除操作，实现全自动化的数据清理
 
+## 7、Snapshot数据备份功能
+
+要通过 Elasticsearch 的 Snapshot 功能进行数据备份和恢复，主要分为以下几个步骤：
+
+### 1）注册快照仓库
+
+首先，需要注册一个快照仓库。这个仓库是用来存储快照文件的，可以是文件系统、HDFS、S3 等。
+
+```json
+PUT /_snapshot/my_backup
+{
+  "type": "fs",
+  "settings": {
+    "location": "/mnt/backups"
+  }
+}
+
+```
+
+快照仓库类型：Elasticsearch 支持多种类型的快照仓库，如文件系统（fs）、HDFS、S3、Azure 等。如果使用 AWS S3 等云存储，需要配置相应的插件和权限，以确保 Elasticsearch 可以访问这些仓库。
+
+### 2）创建快照
+
+注册完仓库之后，可以创建快照。创建快照时，可以选择包含集群中的所有索引，或者仅选择特定的索引。
+
+```json
+PUT /_snapshot/my_backup/snapshot_1
+{
+  "indices": "index_1,index_2",
+  "ignore_unavailable": true,
+  "include_global_state": false
+}
+
+```
+
+快照性能优化：在生产环境中，创建快照时可以启用 partial 参数，使快照即使部分索引不可用也能完成。此外，确保仓库的存储路径足够大且性能良好，会有助于快照的速度和稳定性。
+
+### 3）查看快照状态
+
+在创建快照的过程中，可能需要查看快照的状态以确定它是否成功创建。
+
+```json
+GET /_snapshot/my_backup/snapshot_1/_status
+
+```
+
+集群状态与配置：包括快照创建、恢复在内的很多操作都会涉及集群的全局状态配置。务必了解集群配置，确保在操作期间集群的健康状态，以防止数据丢失或影响集群性能。
+
+### 4）恢复快照
+
+一旦快照被创建好，可以随时恢复数据。恢复可以恢复整个快照，也可以选择性地恢复某个索引。
+
+```json
+POST /_snapshot/my_backup/snapshot_1/_restore
+{
+  "indices": "index_1",
+  "ignore_unavailable": true,
+  "include_global_state": false,
+  "rename_pattern": "index_(.+)",
+  "rename_replacement": "restored_index_$1"
+}
+
+```
+
+### 5）监控与管理
+
+监控快照和恢复的过程，以确保数据的一致性和完整性，也可以对老旧的快照进行删除管理。
+
+```json
+DELETE /_snapshot/my_backup/snapshot_1
+
+```
+
+> - 自动化与调度：在企业级应用中，往往需要定期备份数据。可以使用 Elasticsearch 的 Curator 工具来自动化快照创建、删除和恢复任务。
+>
+> - 增量快照：Elasticsearch 的快照是增量的，即后续快照只会备份自上次快照之后改变的数据部分，这样大大提高了备份效率和降低了存储成本。
