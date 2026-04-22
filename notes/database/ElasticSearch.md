@@ -4508,3 +4508,4 @@ Doc Values 和 Fielddata 都是 ES 中用于排序和聚合的数据结构，但
 
 在 ES 7.x+ 中，Fielddata 的使用场景越来越少，因为我们可以通过多字段（`fields`）为 `text` 添加 `keyword` 子字段来解决排序/聚合需求。
 
+ 
