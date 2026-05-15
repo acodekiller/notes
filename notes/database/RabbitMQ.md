@@ -515,7 +515,79 @@ public class RPCClient {
 }
 ```
 
-## 5、如何确保消息正确地发送至RabbitMQ？
+## 5、队列类型
+
+### 1）核心机制对比
+
+|                | 镜像队列 (Mirrored Queue)             | 仲裁队列 (Quorum Queue)    |
+| :------------- | :------------------------------------ | :------------------------- |
+| **复制算法**   | 链式复制（leader→mirror1→mirror2...） | 并行复制（基于Raft协议）   |
+| **确认机制**   | 所有镜像都保存后才确认                | 超过半数副本确认即可       |
+| **主节点选举** | 无投票机制，最老的同步镜像晋升        | 基于Raft投票，超过半数同意 |
+| **节点恢复**   | 数据丢失，需要阻塞式同步              | 数据保留，非阻塞式追赶     |
+| **状态**       | **RabbitMQ 3.9起弃用，4.0已移除**     | 当前推荐的复制队列类型     |
+
+1. **同步性能低下**：镜像队列采用**链式复制**：leader将消息逐个传给mirror，所有mirror都保存后才能向生产者发送确认。任何一个慢节点都会拖垮整个队列的性能。
+
+2. **节点恢复的灾难性影响**：当故障节点重新上线时，其上的镜像数据**全部丢失**。此时运维人员面临两难选择：
+
+   - **不同步**：增加消息丢失风险
+
+   - **同步**：队列被阻塞，期间完全不可用。如果有大量消息堆积，阻塞时间可能是几分钟、几小时甚至更长
+
+3. **网络分区处理能力差**：镜像队列在网络分区场景下的行为难以预测，甚至可能丢失消息。而仲裁队列通过Raft协议能严格保证一致性。
+
+### 2）功能支持对比
+
+|                | 镜像队列              | 仲裁队列                   |
+| :------------- | :-------------------- | :------------------------- |
+| 非持久化队列   | ✅ 支持                | ❌ 不支持                   |
+| 排他队列       | ✅ 支持                | ❌ 不支持                   |
+| 消息优先级     | ✅ 支持                | ❌ 不支持                   |
+| 每条消息持久化 | 可配置（per message） | 永远持久化                 |
+| 消息TTL        | ✅ 支持                | ❌ 不支持                   |
+| 队列TTL        | ✅ 支持                | ✅ 支持                     |
+| 队列长度限制   | ✅ 支持                | ✅ 支持（部分溢出策略除外） |
+| 死信交换器     | ✅ 支持                | ✅ 支持                     |
+| 消费优先级     | ✅ 支持                | ✅ 支持                     |
+| 毒药消息处理   | ❌ 不支持              | ✅ 支持                     |
+| 队列重平衡     | 自动                  | **手动**                   |
+| 全局QoS预取    | ✅ 支持                | ❌ 不支持                   |
+
+### 3）性能与可靠性对比
+
+|              | 镜像队列             | 仲裁队列           |
+| :----------- | :------------------- | :----------------- |
+| 消息吞吐量   | 较低（链式复制瓶颈） | 更高（并行复制）   |
+| 延迟稳定性   | 不稳定               | 更稳定             |
+| 数据安全性   | 可能有丢失风险       | 通过Jepsen严格测试 |
+| 磁盘占用     | 正常                 | 更高（强制持久化） |
+| 内存占用     | 正常                 | 更高               |
+| 故障可预测性 | 差                   | 好                 |
+
+### 4）选型
+
+1. **仲裁队列适合：**
+
+- 对数据安全要求高的场景（订单、金融、交易等）
+- 需要队列长时间运行的稳定业务
+- 需要强一致性的分布式系统
+
+2. **仲裁队列不适合：**
+
+- 临时队列（如RPC调用的回调队列）——应使用普通经典队列
+- 对内存/磁盘占用敏感的场景
+- 需要消息优先级或消息TTL的场景
+
+3. **普通经典队列（非镜像）仍适用于：**
+
+- 允许消息丢失的临时数据
+- 高性能、单节点足够的场景
+- 发后即忘（fire-and-forget）模式
+
+> Classic 不等于单机部署，它可以在集群中使用，但默认**数据不复制**，因此不高可用
+
+## 6、如何确保消息正确地发送至RabbitMQ？
 
 **开启“发送方确认模式”。**
 
@@ -685,7 +757,7 @@ public static void publishMessageAsync() throws Exception {
 >
 > 最佳性能和资源使用，在出现错误的情况下可以很好地控制，但是实现起来稍微难些
 
-## 6、 如何确保消息接收方消费了消息？
+## 7、 如何确保消息接收方消费了消息？
 
 **接收方确认机制**
 
@@ -700,13 +772,13 @@ public static void publishMessageAsync() throws Exception {
 
 （具体代码实现过程可以参考上面“Work工作模式”）
 
-## 7、如何保证消息不被重复消费？
+## 8、如何保证消息不被重复消费？
 
 （或：如何保证消息消费时的幂等性）
 
 参考上面“消息的重复问题”
 
-## 8、如何保证RabbitMQ消息的可靠传输？
+## 9、如何保证RabbitMQ消息的可靠传输？
 
 消息不可靠的情况可能是消息丢失、劫持等原因；
 
@@ -730,7 +802,7 @@ public static void publishMessageAsync() throws Exception {
 
 消费者丢数据一般是因为采用了自动确认消息模式，改为手动确认消息即可！
 
-## 9、如何保证高可用的？
+## 10、如何保证高可用的？
 
 RabbitMQ 有三种模式：
 
@@ -744,7 +816,7 @@ RabbitMQ 有三种模式：
 
   这种模式，才是所谓的 RabbitMQ 的高可用模式。跟普通集群模式不一样的是，在镜像集群模式下，你创建的 queue，无论元数据还是 queue 里的消息都会存在于多个实例上，就是说，每个 RabbitMQ 节点都有这个 queue 的一个完整镜像，包含 queue 的全部数据的意思。然后每次你写消息到 queue 的时候，都会自动把消息同步到多个实例的 queue 上。RabbitMQ 有很好的管理控制台，就是在后台新增一个策略，这个策略是镜像集群模式的策略，指定的时候是可以要求数据同步到所有节点的，也可以要求同步到指定数量的节点，再次创建 queue 的时候，应用这个策略，就会自动将数据同步到其他的节点上去了。这样的话，好处在于，你任何一个机器宕机了，没事儿，其它机器（节点）还包含了这个 queue 的完整数据，别的 consumer 都可以到其它节点上去消费数据。坏处在于，第一，这个性能开销也太大了吧，消息需要同步到所有机器上，导致网络带宽压力和消耗很重！RabbitMQ 一个 queue 的数据都是放在一个节点里的，镜像集群下，也是每个节点都放这个 queue 的完整数据。
 
-## 10、virtual host是什么？
+## 11、virtual host是什么？
 
 在RabbitMQ中叫做虚拟消息服务器VirtualHost，每个VirtualHost相当于一个相对独立的RabbitMQ服务器，每个VirtualHost之间是相互隔离的。exchange、queue、message不能互通。
 
@@ -768,7 +840,7 @@ RabbitMQ 有三种模式：
 
    ![image-20211017203803372](imgs/image-20211017203803372.png)
 
-## 11、死信队列
+## 12、死信队列
 
 ### 1）死信的概念
 
@@ -782,7 +854,7 @@ RabbitMQ 有三种模式：
 - 队列达到最大长度；
 - 消息被拒绝（basic.reject 或 basic.nack）并且requeu=false。
 
-## 12、延迟队列
+## 13、延迟队列
 
 ### 1）延迟队列概念
 
@@ -832,7 +904,58 @@ channel.queueDeclare(NORMAL_QUEUE, false, false, false, map);
 >
 > 如果设置了队列的 TTL 属性，那么一旦消息过期，就会被队列丢弃（如果配置了死信队列被丢到死信队 列中），而第一种方式，消息即使过期，也不一定会被马上丢弃，因为消息是否过期是在即将投递到消费者 之前判定的，如果当前队列有严重的消息积压情况，则已过期的消息也许还能存活较长时间；另外，还需要注意的一点是，如果不设置 TTL，表示消息永远不会过期，如果将 TTL 设置为 0，则表示除非此时可以 直接投递该消息到消费者，否则该消息将会被丢弃。
 
-## 13、优先级队列
+### 4）具体实现
+
+RabbitMQ 本身并没有内置的延迟队列，但可以通过两种方式来实现：**TTL + 死信队列（DLX）** 或 **延迟消息插件（rabbitmq_delayed_message_exchange）**。
+
+> 限制条件：
+>
+> 1. **版本限制**：`rabbitmq_delayed_message_exchange` 插件在某些较新的 **RabbitMQ 3.x.x** 版本中已被弃用。使用前，请务必查阅你所使用版本的官方文档进行确认。
+> 2. **插件风险**：使用延迟消息插件前，请仔细评估。官方明确指出它**不适合大规模延迟消息场景**，且在节点故障时可能面临消息丢失或无法消费的风险。
+> 3. **精度误差**：插件的延迟时间可能存在1%左右的误差。
+
+#### 1. 使用 `TTL + DLX` 实现
+
+```java
+// 1. 声明目标死信交换机和队列（消费者最终监听此队列）
+channel.exchangeDeclare("dlx.exchange", "direct");
+channel.queueDeclare("target.queue", true, false, false, null);
+channel.queueBind("target.queue", "dlx.exchange", "dlx.routing.key");
+
+// 2. 声明普通队列，并设置消息的TTL和死信路由参数
+Map<String, Object> args = new HashMap<>();
+args.put("x-message-ttl", 10000); // 设置队列中消息的TTL为10秒
+args.put("x-dead-letter-exchange", "dlx.exchange"); // 指定死信交换机
+args.put("x-dead-letter-routing-key", "dlx.routing.key"); // 指定死信路由键
+
+channel.queueDeclare("temp.queue", true, false, false, args);
+// 注意：此队列不应有消费者，消息会因TTL过期而成为死信
+```
+
+#### 2. 使用 `延迟消息插件` 实现
+
+```java
+// 1. 声明一个类型为 "x-delayed-message" 的交换机
+Map<String, Object> args = new HashMap<>();
+args.put("x-delayed-type", "direct"); // 指定交换机的路由类型，如 direct, topic 等
+channel.exchangeDeclare("delayed.exchange", "x-delayed-message", true, false, args);
+
+// 2. 声明普通队列，并绑定到上述交换机
+channel.queueDeclare("my.queue", true, false, false, null);
+channel.queueBind("my.queue", "delayed.exchange", "my.routing.key");
+
+// 3. 发送消息时，在header中设置 "x-delay" 来指定延迟时间（毫秒）
+Map<String, Object> headers = new HashMap<>();
+headers.put("x-delay", 5000); // 延迟5秒
+
+AMQP.BasicProperties props = new AMQP.BasicProperties.Builder()
+        .headers(headers)
+        .build();
+
+channel.basicPublish("delayed.exchange", "my.routing.key", props, "延迟消息".getBytes());
+```
+
+## 14、优先级队列
 
 ### 1）使用场景
 
@@ -847,12 +970,19 @@ channel.queueDeclare(NORMAL_QUEUE, false, false, false, map);
 2. 在队列中代码添加优先级：
 
    ```java
-   Map<String, Object> params = new HashMap();
-   params.put("x-max-priority", 10);
-   channel.queueDeclare("hello", true, false, false, params);
+   // 声明支持优先级的队列（最大优先级10）
+   Map<String, Object> args = new HashMap<>();
+   args.put("x-max-priority", 10);
+   channel.queueDeclare("priority-queue", true, false, false, args);
+   
+   // 发送高优先级消息（优先级9）
+   AMQP.BasicProperties props = new AMQP.BasicProperties.Builder()
+       .priority(9)
+       .build();
+   channel.basicPublish("", "priority-queue", props, "high priority message".getBytes());
    ```
 
-## 14、惰性队列
+## 15、惰性队列
 
 ### 1）使用场景
 
