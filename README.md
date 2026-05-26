@@ -7,10 +7,10 @@
 ## ☕️ JAVA
 
 - [JAVA基础](notes/java/java基础)
-- [Java集合框架](notes/java/java集合框架)
-- [Java并发编程](notes/java/java并发编程)
-- [java虚拟机](notes/java/java虚拟机)
-- [Jdk1.8新特性](notes/java/jdk8新特性)
+- [JAVA集合框架](notes/java/java集合框架)
+- [JAVA并发编程](notes/java/java并发编程)
+- [JAVA虚拟机](notes/java/java虚拟机)
+- [JDK1.8新特性](notes/java/jdk8新特性)
 - [反射机制](notes/java/反射机制)
 
 ## 🖼️前端
