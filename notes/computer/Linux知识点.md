@@ -987,7 +987,7 @@ test命令有两种格式：test condition 或[ condition ]（使用方括号时
          read -p "请输入数值2：" data2
          
          #调用函数
-         x $data1 $data2
+         getMax $data1 $data2
          
          #$? 只有一个字节
          echo "$data1和$data2的最大值：$?"
@@ -1034,15 +1034,13 @@ test命令有两种格式：test condition 或[ condition ]（使用方括号时
 
 ## 3、如何排查CPU load过高问题
 
-[参考博客：《cpu load过高问题排查》](https://www.cnblogs.com/lddbupt/p/5779655.html)
-
 ![image-20211005125452051](imgs/image-20211005125452051.png)
 
 top命令中load average显示的是最近1分钟、5分钟和15分钟的系统平均负载。
 
 ### 1）load average的概念
 
-系统的load是指正在运行和准备好运行的进程的总数。load average就是一定实践内的load数量。
+系统的load是指正在运行和准备好运行的进程的总数。load average就是一定时间内的load数量。
 
 一般来说只要每个CPU的当前活动进程数不大于3那么系统的性能就是良好的，如果每个CPU的任务数大于5，那么就表示这台机器的性能有严重问题。
 
